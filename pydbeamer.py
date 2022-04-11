@@ -4,12 +4,28 @@ import pickle
 from io import StringIO
 import sys
 import time
-from urllib.request import urlopen
 import os
-from math import sin
-import pyperclip
+from shutil import copyfile
 
+import importlib.resources as res
+import pydbeamer
 
+latexfile = "pythonhighlight.sty"
+if not os.path.exists(latexfile):
+	pythonfile = res.open_text(pydbeamer, latexfile, encoding='utf-8', errors='strict')
+	copyfile(pythonfile.name, os.getcwd() + '/' + latexfile)
+
+def is_chinese(string):
+    """
+    检查整个字符串是否包含中文
+    :param string: 需要检查的字符串
+    :return: bool
+    """
+    for ch in string:
+        if u'\u4e00' <= ch <= u'\u9fff':
+            return True
+
+    return False
 class Base:
 	'''
 	latex对象的基类Base, 定义各种类一些共同的函数
@@ -66,13 +82,15 @@ class Base:
 		return self
 
 	def getN(self): #获取item的数量, 便于计算incremental显示的帧数
-		return None
+		return 1
 
 	def setstart(self, n):
 
 		self.sindex = n
 		previous = n
 		for item in self.items:
+			if type(item) == str: continue
+
 			item.setstart(previous)
 			if item.getN():
 				previous += item.getN()
@@ -220,7 +238,7 @@ class Only(Base):
 		self.end = "}\n"
 
 class OnlyOne(Base):
-	def __init__(self, *arg, sindex = 1):
+	def __init__(self, *arg, sindex = 0):
 		self.items = list(arg)
 		self.sindex = sindex
 
@@ -230,17 +248,19 @@ class OnlyOne(Base):
 		previous = self.sindex
 		for i in range(n):
 			if i > 0:
-				nframes = self.items[i - 1].getN()
-				if nframes:
-					previous += nframes
+				if type(self.items[i-1]) != str:
+					previous += self.items[i - 1].getN()
 				else:
-					previous += 1
-			if self.items[i].getN():
-				endindex = str(previous + self.items[i].getN())
-				output += "\\only<{" + str(previous + 1) + "-" + endindex +"}>{\n"
+					previous += 1		
+			# print(i, self.items[i], self.items[i].getN())			
+			if type(self.items[i]) != str and self.items[i].getN():
+				endindex = str(previous + self.items[i].getN()) 
+				output += "\\only<{" + str(previous + 1) + "-" + endindex + "}>{\n"
 			else:
 				output += "\\only<{" + str(previous + 1) + "}>{\n"
-			self.items[i].setstart(previous + 1)
+			if type(self.items[i]) != str:
+				self.items[i].setstart(previous + 1)
+
 			output += str(self.items[i])
 			output += "}\n\n"
 		return output
@@ -248,8 +268,13 @@ class OnlyOne(Base):
 	def getN(self):
 		return len(self.items)
 
+
+
+
+
+
 class OnlyPlus(Base):
-	def __init__(self, sindex = 1):
+	def __init__(self, sindex = 0):
 		self.items = []
 		self.sindex = sindex
 
@@ -259,24 +284,35 @@ class OnlyPlus(Base):
 		previous = self.sindex
 		for i in range(n):
 			if i > 0:
-				nframes = self.items[i - 1].getN()
-				if nframes:
-					previous += nframes
+				if type(self.items[i-1]) != str:
+					previous += self.items[i - 1].getN()
 				else:
 					previous += 1
-			output += "\\only<{" + str(previous + 1) + "-}>{\n"
-			self.items[i].setstart(previous + 1)
+			if type(self.items[i]) != str:
+				output += "\\only<{" + str(previous + 1) + "-}>{\n"
+				self.items[i].setstart(previous + 1)
+			else:
+				output += "\\only<{" + str(previous) + "-}>{\n"
+
 			output += str(self.items[i])
-			output += "}\n\n"
+			output += "}\n"
 		return output
 
+class iExpression(OnlyPlus):
+	def __init__(self, content, sindex = 1):
+		items = content.split("\t")
+		OnlyPlus.__init__(self, sindex = sindex)
+		for item in items:
+			self(item)
+	def getN(self):
+		return len(self.items)
 
 
 class BaseBox(Base):
 	def getN(self):
 		N = 0
 		for item in self.items:
-			n = item.getN()
+			n = item.getN() if type(item) != str else 1
 			if n:
 				N += n
 			else:
@@ -379,11 +415,6 @@ class Image(Base):
 		pickle.dump(figdict, f)
 		return True, figdict.get(newfile, 0)
 
-	# def getN(self):
-	# 	return 1
-
-
-
 	def __str__(self):
 		output = self.start
 		for path in self.paths:
@@ -421,11 +452,6 @@ class PythonBlock(Base):
 		f = open(self.path, "w")
 		n = 0
 		for line in lines:
-			# if n == 0 and len(line.strip()) == 0:
-			# 	continue
-			# # if n == 0:
-			# # 	line += "#" + self.name
-			# n += 1
 			f.write(line +"\n")
 		f.close()
 		
@@ -446,9 +472,6 @@ class PythonBlock(Base):
 				continue
 			self.code += "#" + item + "\n"
 
-	# def getN(self):
-	# 	return 1
-
 class PythonBlockPlus(PythonBlock):
 	'''
 	制作渐进显示的代码块
@@ -465,9 +488,6 @@ class PythonBlockPlus(PythonBlock):
 		self.name = path
 		self.items = []
 
-	
-
-
 	def __str__(self):
 		lines = self.code.split("\n")
 		lines = [line for line in lines if line.strip() != ""]
@@ -475,18 +495,19 @@ class PythonBlockPlus(PythonBlock):
 		for i in range(len(lines)):
 			code = ""
 			for j in range(i + 1):
-				# if i == len(lines) - 1 and j == 0:
-				# 	lines[j] += "#" + self.name + str(i) + ".py"
 				code += lines[j] + "\n"
 			cfile = self.path + str(i) + ".py"
-			f = open(cfile, "w")
-			f.write(code)
-			f.close()
+			try:
+				f = open(cfile, "w")
+				f.write(code)
+				f.close()
+			except:
+				print("Error",self.path)
 			slash = "" if i < len(lines) - 1 else "-"
 
 			output += "\\only<" + str(self.sindex + i) + slash + ">{\n"
-			if i == len(lines) - 1:
-				output += "\\href{run:"+ "./" + PythonBlock.cpath + self.name + str(i) + ".py" +"}{" + self.name + str(i) + ".py" +"}\n"
+			# if i == len(lines) - 1:
+			# 	output += "\\href{run:"+ "./" + PythonBlock.cpath + self.name + str(i) + ".py" +"}{" + self.name + str(i) + ".py" +"}\n"
 			output += "\\inputpython{" + cfile  + "}{1}{" + str(i + 1) +"} \n"
 			output += "}\n"
 		return output
@@ -496,11 +517,9 @@ class PythonBlockPlus(PythonBlock):
 		lines = [line for line in lines if line.strip() != ""]
 		return len(lines)
 
-
-
-
-
-
+	def setstart(self, n):
+		self.sindex = n
+		# print("set :", n)
 
 
 class ItemList(Base):
@@ -510,6 +529,11 @@ class ItemList(Base):
 		self.sindex = sindex
 		self.items = list(items)
 
+	def getN(self):
+		if self.sindex != -1:
+			return len(self.items)
+		return 1
+
 	def __str__(self):
 		output = self.start
 		prefix = "\\item "
@@ -518,11 +542,15 @@ class ItemList(Base):
 		for item in self.items:
 			pre = prefix
 			if self.sindex != -1:
-				pre = prefix + "<" + str(i + 1) + "-> "
+				pre = prefix + "<" + str(i) + "-> "
 				i += 1
 			output += pre + str(item) + "\n"
 		output += self.end
 		return output
+
+	def setstart(self, n):
+		if self.sindex != -1:
+			self.sindex = n
 
 class NumList(ItemList):
 	def __init__(self, *items, sindex = -1):
@@ -530,6 +558,7 @@ class NumList(ItemList):
 		self.end = "\\end{enumerate}\n"
 		self.sindex = sindex
 		self.items = list(items)
+
 
 class Flow(Base):
 	'''
@@ -575,47 +604,81 @@ class DescDiagram(Base):
 			output += "{" + ",".join(item) +"},"
 		output += self.end
 		return output
-	# 	 % \smartdiagram[descriptive diagram]{
- # % {数值型, 数值计算的基础},
- # % {字符串, 用于信息的表达},
- # % {Hello, \smartdiagram[flow diagram:horizontal]{
- # % {数值型},
- # % {字符串}
- # % }},
- # % }
 
 class Boxed(Base):
 	def __init__(self):
 		self.items = []
 		self.start = "\\begin{framed}"
 		self.end = "\\end{framed}"
-
+Mac = 'darwin'
+Win = 'win32'
 class Frame(Base):
 	def __init__(self, title):
 		self.items = []
 		self.start = "\\begin{frame}[t]\\frametitle{" + title +"}\n\n"
 		self.end = "\\end{frame}\n\n"
 
+	def outline(title):
+		f = Frame(title)
+		contents = '''
+        \\tableofcontents[
+    currentsection,
+    sectionstyle=show/show,
+    subsectionstyle=show/show/hide,
+  subsubsectionstyle=show/show/hide,
+       ]
+       '''
+		return f(contents)
+
+class TitlePage(Base):
+	def __init__(self, title, subtitle):
+		self.start = '\\title{' + title +'}\n'
+		self.start += '\\author{' + subtitle + '}\n'
+		self.end = '\\maketitle'
+		self.title = title
+		self.subtitle = subtitle
+		self.items = []
+	def isChinese(self):
+		return is_chinese(self.title)
+
+
 class Document(Base):
-	def __init__(self, modfile, mainfile, **infos):
-		f = open(modfile, encoding = 'utf-8')
+	def __init__(self, *titles, mainfile, file):
+		# print("begin:", mainfile)
+		mainfile = mainfile.replace("\\","/")
+		mainfile = mainfile.split("/")[-1].replace(".py","")
+		f = open(file, encoding = 'utf-8')
 		self.items = []
 		lines = f.readlines()
-		self.start = ""
-		for i in range(len(lines) - 1):
-			line = lines[i]
-			for key in infos:
-				value = infos[key]
-				if key in line:
-					line = line.replace(key, value)
-			self.start += line
-
-		self.end = lines[-1]
+		self.start = "".join(lines)
+		self.start += "\\begin{document}"
+		self.end = "\\end{document}"
 		self.mainfile = mainfile
 		self.initiate()
+		self.titles = list(titles)
+		
+	def __str__(self):
+		'''
+		每个对象转化为字符串的方法, 使用start开始, end结束, 中间为其中的各种latex对象
+		如果item中有嵌套, 会继续调用它的__str__方法
+		'''
+		output = self.start
+
+
+		for title in self.titles:
+			output += str(title) + "\n"
+
+		if type(self) == Beamer:
+			dct = {True : "主要内容", False : "Outline"}
+			self.outline = Frame.outline(dct[self.titles[0].isChinese()])
+			output += str(self.outline) + "\n"
+
+		for item in self.items:
+			output += str(item) + "\n"
+		output += self.end
+		return output
 
 	def initiate(self):
-		# pdir = os.getcwd().split("/")[-1] #parent directory
 		latexdir = "latex"
 		codedir = self.mainfile + "/code/"
 		Image.figdir =  self.mainfile + "/figure/"
@@ -629,12 +692,13 @@ class Document(Base):
 			os.system("/usr/bin/defaults write com.apple.screencapture name " + self.mainfile)	
 			Image.path = os.getcwd() +"/"+ figdir
 			Image.sspath = Image.path
-			PythonBlock.pdir = os.getcwd() +"/"+ codedir
+			PythonBlock.pdir = sys.path[0]+"/"+ codedir
 			PythonBlock.cpath = codedir
 		elif sys.platform == Win:
-			Image.path = os.getcwd() + "/" + figdir
+			Image.path = os.path.expanduser('~').replace("\\", "/") + "/" + "Pictures"
 			Image.sspath = Image.path
-			PythonBlock.pdir = os.getcwd() + "/" + codedir
+			Image.figdir = Image.path
+			PythonBlock.pdir =  sys.path[0].replace("\\", "/") + "/" + codedir
 			#读取windows截屏路径的配置
 
 	def build(self, repeat = False):
@@ -643,7 +707,7 @@ class Document(Base):
 		outfile = prefix + ".tex"
 		pdffile = prefix + ".pdf"
 		logfile = prefix + ".latex.log"
-		f = open(outfile, "w")
+		f = open(outfile, "w", encoding = "utf-8")
 		f.write(str(self))
 		f.close()
 		import os
@@ -651,82 +715,56 @@ class Document(Base):
 		opencmd = "/usr/bin/open " if ifmac else "ii "
 		cmdpath = "/bin/" if ifmac else ""
 		shfile = "run.sh"
-		f = open(shfile, "w")
-		cmd = "xelatex " + outfile + " > " + logfile + "\n"
+		cmd = "xelatex " + outfile  + "\n"
+		from subprocess import run
+		
 		if repeat: cmd *= 2
-		cmd += cmdpath + "rm " + prefix + ".aux" + "\n"
-		cmd += cmdpath + "rm " + prefix + ".log" + "\n"
-		cmd += cmdpath + "rm " + prefix + ".out" + "\n"
-		cmd += opencmd + "./" + pdffile + "\n"
-		f.write(cmd)
-		f.close()
-		import os
-		os.system(cmdpath + "sh " + os.getcwd() + "/"+ shfile)
+		res = os.popen(cmd).read()
+		# run(cmdpath + "rm " + prefix + ".aux")
+		# run(cmdpath + "rm " + prefix + ".log")
+		# run(cmdpath + "rm " + prefix + ".out")
+		if ifmac:
+			os.system(opencmd + pdffile)
+		else:
+			os.startfile(pdffile)
+		# f.write(cmd)
+		# f.close()
+		# import os
+		# print(cmdpath + "sh " + os.getcwd() + "/"+ shfile)
+		# os.system(cmdpath + "sh " + os.getcwd() + "/"+ shfile)
 
 
 class Beamer(Document):
-	def __init__(self, mainfile, **infos):
-		Document.__init__(self, "../py/basebeamer.tex", mainfile, **infos)
+	def __init__(self, *titles, mainfile, file = None):
+		if file == None:
+			file = res.open_text(pydbeamer, 'basebeamer.tex', encoding='utf-8', errors='strict')
+			file = file.name
+		Document.__init__(self, *titles, mainfile = mainfile, file = file)
 
 class A4Doc(Document):
-	def __init__(self, mainfile, **infos):
-		Document.__init__(self, "../py/baseA4.tex", mainfile, **infos)
-
-
-# def build(doc, prefix, cdir = 'latex', repeat = False):
-# 	ifmac = sys.platform == Mac
-# 	outfile = prefix + ".tex"
-# 	pdffile = prefix + ".pdf"
-# 	f = open(outfile, "w")
-# 	f.write(str(doc))
-# 	f.close()
-# 	import os
-# 	latexpath = "/Library/TeX/texbin/" if ifmac else ""
-# 	opencmd = "/usr/bin/open " if ifmac else "ii "
-# 	cmdpath = "/bin/" if ifmac else ""
-# 	shfile = "run.sh"
-# 	f = open(shfile, "w")
-# 	cmd = "xelatex " + outfile + "\n"
-# 	if repeat: cmd *= 2
-# 	# cmd += cmdpath + "cp " + pdffile + " " + "./" + cdir + "/" + pdffile + "\n"
-# 	cmd += cmdpath + "cp " + outfile + " " + "./" + cdir + "/" + outfile + "\n"
-# 	cmd += cmdpath + "rm " + prefix + ".aux" + "\n"
-# 	cmd += cmdpath + "rm " + prefix + ".log" + "\n"
-# 	cmd += cmdpath + "rm " + prefix + ".out" + "\n"
-# 	cmd += opencmd + "./" + pdffile + "\n"
-# 	f.write(cmd)
-# 	f.close()
-# 	import os
-# 	os.system(cmdpath + "sh " + os.getcwd() + "/"+ shfile)
-
+	def __init__(self, *titles, mainfile, file = None):
+		if file == None:
+			file = res.open_text(pydbeamer, 'baseA4.tex', encoding='utf-8', errors='strict')
+			file = file.name
+		Document.__init__(self, *titles, mainfile = mainfile, file = file)
 
 def makedirs(dir):
 	if not os.path.exists(dir):
 		os.makedirs(dir)
 
-Mac = 'darwin'
-Win = 'win32'
-def initiate():
-	pdir = os.getcwd().split("/")[-1] #parent directory
-	latexdir = "latex"
-	codedir = "contents/code/"
-	figdir =  "contents/figure/"
-	makedirs(codedir)
-	makedirs(figdir)
-	makedirs(latexdir)
-	if sys.platform == Mac:
-		#如果是mac系统, 修改截屏的默认路径和截屏图片的名字
-		os.system("/usr/bin/defaults write com.apple.screencapture location " + os.getcwd() + "/" + figdir)
-		os.system("/usr/bin/defaults write com.apple.screencapture name " + pdir)	
-		Image.path = os.getcwd() +"/"+ figdir
-		Image.sspath = Image.path
-		PythonBlock.pdir = os.getcwd() +"/"+ codedir
-		PythonBlock.cpath = codedir
-	elif sys.platform == Win:
-		Image.path = os.getcwd() + "/" + figdir
-		Image.sspath = Image.path
-		PythonBlock.pdir = os.getcwd() + "/" + codedir
-		#读取windows截屏路径的配置
-		#设置图片路径
 PB = PythonBlock
 PBP = PythonBlockPlus
+IL = ItemList
+NL = NumList
+Im = Image
+Fr = Frame
+
+if __name__ == '__main__':
+	print(os.getcwd())
+	
+
+	# ret1 = is_chinese("Ley刘亦菲")
+	# print(ret1)
+
+	# ret2 = is_chinese("123刘")
+	# print(ret2)
